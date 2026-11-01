@@ -7,7 +7,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 
-internal class SimplePage(private val activity: Activity, title: String) {
+internal class SimplePage(private val activity: Activity, title: String? = null) {
     val column = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
 
     init {
@@ -23,7 +23,7 @@ internal class SimplePage(private val activity: Activity, title: String) {
             }
         }
         activity.setContentView(scroll)
-        text(title).textSize = 26f
+        title?.let { text(it).textSize = 26f }
     }
 
     fun text(value: String): TextView = TextView(activity).apply {
