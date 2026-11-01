@@ -42,11 +42,11 @@ class MainActivity : Activity(), App.ServiceStateListener {
             }
         }
         page.column.addView(enabledSwitch)
+        addLauncherIconSwitch(page)
         page.button("刷新连接状态") { onServiceStateChanged(App.mService) }
         reloadButton = page.button("热重载已更新的模块") { hotReload() }.apply { isEnabled = false }
         reloadStatus = page.text("").apply { visibility = View.GONE }
         page.button("打开自动填充测试") { startActivity(Intent(this, AutofillTestActivity::class.java)) }
-        addLauncherIconSwitch(page)
     }
 
     private fun addLauncherIconSwitch(page: SimplePage) {
