@@ -47,6 +47,7 @@ internal class InlineSuggestionHost(
     private val clipRect = Rect()
     private val viewportRect = Rect()
     private val drawListener = ViewTreeObserver.OnDrawListener { clipSuggestions() }
+    private val layoutListeners = mutableMapOf<View, OnLayoutChangeListener>()
     private var inputVisible = false
     private var hasSuggestions = false
 
@@ -109,18 +110,21 @@ internal class InlineSuggestionHost(
             report("SUGGESTION_SIZE_INVALID index=$index")
             return
         }
-        view.addOnLayoutChangeListener(object : OnLayoutChangeListener {
+        val layoutListener = object : OnLayoutChangeListener {
             override fun onLayoutChange(
                 changedView: View, left: Int, top: Int, right: Int, bottom: Int,
                 oldLeft: Int, oldTop: Int, oldRight: Int, oldBottom: Int,
             ) {
                 if (right <= left || bottom <= top) return
                 changedView.removeOnLayoutChangeListener(this)
+                layoutListeners.remove(changedView)
                 val bounds = Rect()
                 val visible = changedView.getGlobalVisibleRect(bounds)
                 report("SUGGESTION_LAYOUT index=$index width=${right - left} height=${bottom - top} visible=$visible bounds=$bounds")
             }
-        })
+        }
+        layoutListeners[view] = layoutListener
+        view.addOnLayoutChangeListener(layoutListener)
         slot.addView(view, LayoutParams(renderedSize).apply { gravity = Gravity.CENTER_VERTICAL })
         slot.visibility = VISIBLE
         hasSuggestions = true
@@ -133,6 +137,13 @@ internal class InlineSuggestionHost(
     fun clear() {
         hasSuggestions = false
         visibility = GONE
+        // 远程内容可能仍被系统持有，主动解除其中引用模块代码的监听器。
+        layoutListeners.forEach { (view, listener) -> view.removeOnLayoutChangeListener(listener) }
+        layoutListeners.clear()
+        for (index in 0 until row.childCount) {
+            val slot = row.getChildAt(index) as? ViewGroup ?: continue
+            slot.getChildAt(0)?.setOnClickListener(null)
+        }
         row.removeAllViews()
         scroll.scrollTo(0, 0)
     }

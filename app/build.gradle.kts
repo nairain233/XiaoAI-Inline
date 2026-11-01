@@ -47,4 +47,5 @@ dependencies {
     implementation(libs.libxposed.service)
     implementation(libs.androidx.autofill)
     testImplementation(libs.junit)
+    testImplementation(libs.libxposed.api)
 }

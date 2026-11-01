@@ -13,10 +13,12 @@ import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InlineSuggestion
 import android.widget.FrameLayout
 import io.github.libxposed.api.XposedModule
+import love.nairain.xiaoai.ReloadableHooks
 import java.lang.reflect.Method
 
 internal class XiaoAiImeHook(
     private val module: XposedModule,
+    private val hooks: ReloadableHooks,
     private val serviceClass: Class<*>,
     private val enabled: () -> Boolean,
     private val report: (String) -> Unit,
@@ -30,6 +32,8 @@ internal class XiaoAiImeHook(
     private var lastTop: Int? = null
     private var pendingSuggestions: List<InlineSuggestion>? = null
     private var supportedView: Boolean? = null
+    private var inputContainer: FrameLayout? = null
+    private val reloadGate = ReloadGate()
 
     fun install() {
         intercept("onCreateInlineSuggestionsRequest", Bundle::class.java) { service, _ ->
@@ -57,13 +61,10 @@ internal class XiaoAiImeHook(
             val root = result as? ViewGroup
             // 实机外层容器会强制所有直接子 View 填满，建议条应加入其内部原生容器。
             val container = root?.getChildAt(0) as? FrameLayout
+            inputContainer = container
             supportedView = container != null
             if (container != null) {
-                host = (host ?: InlineSuggestionHost(service, report, ::dismissSuggestions)).also {
-                    it.attachTo(container)
-                    it.setInputVisible(inputVisible)
-                }
-                lastTop?.let { host?.positionAt(it) }
+                attachHost(service, container)
                 report("HOST_ATTACHED root=${root.javaClass.simpleName}")
                 pendingSuggestions?.let { suggestions ->
                     pendingSuggestions = null
@@ -117,13 +118,57 @@ internal class XiaoAiImeHook(
             clear("destroy")
             (host?.parent as? ViewGroup)?.removeView(host)
             host = null
+            inputContainer = null
             activeService = null
         }
         deoptimizeInlineCallers()
     }
 
     fun onEnabledChanged(value: Boolean) {
-        if (!value) mainHandler.post { clear("disabled") }
+        synchronized(mainHandler) {
+            if (!value && !reloadGate.retired) mainHandler.post { clear("disabled") }
+        }
+    }
+
+    // 与输入法回调同在主线程，确保清理后不会重新挂入旧 View。
+    fun prepareForReload(): Map<String, Any?>? {
+        synchronized(mainHandler) {
+            if (!reloadGate.retire()) return null
+            mainHandler.removeCallbacksAndMessages(null)
+        }
+        val state = hashMapOf<String, Any?>(
+            "service" to activeService,
+            "container" to inputContainer,
+            "visible" to inputVisible,
+            "top" to lastTop,
+        )
+        acceptResponses = false
+        clear("hot-reload")
+        (host?.parent as? ViewGroup)?.removeView(host)
+        host = null
+        inputContainer = null
+        activeService = null
+        return state
+    }
+
+    fun restoreAfterReload(state: Map<*, *>?) {
+        val service = state?.get("service") as? InputMethodService ?: return
+        bind(service)
+        inputContainer = state["container"] as? FrameLayout
+        supportedView = inputContainer?.let { true }
+        inputVisible = state["visible"] == true
+        lastTop = state["top"] as? Int
+        inputContainer?.let { attachHost(service, it) }
+        // 旧请求的响应不跨代接受；切换输入框/发起新请求后恢复建议。
+        report("IME_RESTORED inputVisible=$inputVisible attached=${host?.isAttachedToWindow == true}")
+    }
+
+    private fun attachHost(service: InputMethodService, container: FrameLayout) {
+        host = (host ?: InlineSuggestionHost(service, report, ::dismissSuggestions)).also {
+            it.attachTo(container)
+            it.setInputVisible(inputVisible)
+        }
+        lastTop?.let { host?.positionAt(it) }
     }
 
     private fun bind(service: InputMethodService) {
@@ -131,6 +176,7 @@ internal class XiaoAiImeHook(
         clear("service-changed")
         (host?.parent as? ViewGroup)?.removeView(host)
         host = null
+        inputContainer = null
         activeService = service
         session.reset()
         inputVisible = false
@@ -173,22 +219,35 @@ internal class XiaoAiImeHook(
         val token = session.nextResponse() ?: return
         val slots = target.prepare(suggestions.size)
         suggestions.forEachIndexed { index, suggestion ->
+            if (!reloadGate.begin()) return@forEachIndexed
+            var completed = false
+            fun complete() {
+                if (!completed) {
+                    completed = true
+                    reloadGate.end()
+                }
+            }
             try {
                 suggestion.inflate(
                     service,
                     Size(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT),
                     service.mainExecutor,
                 ) { view ->
-                    if (!session.accepts(token) || !enabled() || !acceptResponses ||
-                        activeService !== service || host !== target) return@inflate
-                    if (view != null) {
-                        target.showSuggestion(slots[index], view, index)
-                        lastTop?.let { target.positionAt(it) }
-                    } else {
-                        report("INFLATE_EMPTY index=$index")
+                    try {
+                        if (!session.accepts(token) || !enabled() || !acceptResponses ||
+                            activeService !== service || host !== target) return@inflate
+                        if (view != null) {
+                            target.showSuggestion(slots[index], view, index)
+                            lastTop?.let { target.positionAt(it) }
+                        } else {
+                            report("INFLATE_EMPTY index=$index")
+                        }
+                    } finally {
+                        complete()
                     }
                 }
             } catch (error: Exception) {
+                complete()
                 report("INFLATE_FAILED index=$index type=${error.javaClass.simpleName}")
             }
         }
@@ -227,9 +286,9 @@ internal class XiaoAiImeHook(
     }
 
     private fun intercept(name: String, vararg parameters: Class<*>, action: (InputMethodService, List<Any?>) -> Any?) {
-        module.hook(resolve(name, parameters)).intercept { chain ->
+        hooks.intercept(resolve(name, parameters)) { chain ->
             val service = chain.thisObject as? InputMethodService
-            if (service == null || !serviceClass.isInstance(service) || !enabled()) return@intercept chain.proceed()
+            if (reloadGate.retired || service == null || !serviceClass.isInstance(service) || !enabled()) return@intercept chain.proceed()
             try {
                 action(service, chain.args)
             } catch (error: Exception) {
@@ -240,9 +299,9 @@ internal class XiaoAiImeHook(
     }
 
     private fun before(name: String, vararg parameters: Class<*>, action: (InputMethodService, List<Any?>) -> Unit) {
-        module.hook(resolve(name, parameters)).intercept { chain ->
+        hooks.intercept(resolve(name, parameters)) { chain ->
             val service = chain.thisObject as? InputMethodService
-            if (service != null && serviceClass.isInstance(service)) {
+            if (!reloadGate.retired && service != null && serviceClass.isInstance(service)) {
                 try { action(service, chain.args) } catch (error: Exception) {
                     report("LIFECYCLE_FAILED name=$name type=${error.javaClass.simpleName}")
                 }
@@ -252,10 +311,10 @@ internal class XiaoAiImeHook(
     }
 
     private fun after(name: String, vararg parameters: Class<*>, action: (InputMethodService, List<Any?>, Any?) -> Unit) {
-        module.hook(resolve(name, parameters)).intercept { chain ->
+        hooks.intercept(resolve(name, parameters)) { chain ->
             val result = chain.proceed()
             val service = chain.thisObject as? InputMethodService
-            if (service != null && serviceClass.isInstance(service)) {
+            if (!reloadGate.retired && service != null && serviceClass.isInstance(service)) {
                 try { action(service, chain.args, result) } catch (error: Exception) {
                     report("LIFECYCLE_FAILED name=$name type=${error.javaClass.simpleName}")
                 }
