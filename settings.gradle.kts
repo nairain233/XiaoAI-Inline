@@ -22,6 +22,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "XiaoAiShuRuFa"
+rootProject.name = "XiaoAI-Inline"
 
 include(":app")
