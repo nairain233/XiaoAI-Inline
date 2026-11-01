@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">小爱内联填充</string>
+    <string name="module_description">为超级小爱输入法接入系统键盘内联自动填充，支持兼容的密码管理器。</string>
+</resources>

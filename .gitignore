@@ -1,0 +1,10 @@
+*.iml
+.DS_Store
+.gradle
+/.idea
+/captures
+/local.properties
+build
+调试/
+/docs/
+/AGENTS.md

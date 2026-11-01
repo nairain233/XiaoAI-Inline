@@ -1,0 +1,4 @@
+<resources>
+    <item name="test_username" type="id" />
+    <item name="test_password" type="id" />
+</resources>
