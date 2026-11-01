@@ -2,10 +2,13 @@ package love.nairain.xiaoai
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import io.github.libxposed.service.XposedService
 
 @SuppressLint("SetTextI18n", "UseSwitchCompatOrMaterialCode")
@@ -36,7 +39,36 @@ class MainActivity : Activity(), App.ServiceStateListener {
         page.text("在 LSPosed 中启用本模块，作用域勾选「系统框架」和「超级小爱输入法」。首次启用后需要重启手机。\n\n将密码管理器设为系统自动填充服务，并在密码管理器中选择键盘内联展示。")
         page.button("刷新连接状态") { onServiceStateChanged(App.mService) }
         page.button("打开自动填充测试") { startActivity(Intent(this, AutofillTestActivity::class.java)) }
+        addLauncherIconSwitch(page)
         page.text("首次适配：Android 17 / HyperOS 4 / 小爱 0.2.1246。模块不会读取密码库或记录填充内容。")
+    }
+
+    private fun addLauncherIconSwitch(page: SimplePage) {
+        val launcher = ComponentName(this, "$packageName.Launcher")
+        var updatingIcon = false
+        val hideIconSwitch = Switch(this).apply {
+            text = "隐藏桌面图标"
+            isChecked = packageManager.getComponentEnabledSetting(launcher) ==
+                PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            setOnCheckedChangeListener { button, hidden ->
+                if (updatingIcon) return@setOnCheckedChangeListener
+                try {
+                    packageManager.setComponentEnabledSetting(
+                        launcher,
+                        if (hidden) PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                        else PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
+                        PackageManager.DONT_KILL_APP
+                    )
+                } catch (_: Exception) {
+                    updatingIcon = true
+                    button.isChecked = !hidden
+                    updatingIcon = false
+                    Toast.makeText(this@MainActivity, "桌面图标设置失败，请重试。", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        page.column.addView(hideIconSwitch)
+        page.text("隐藏后可从 LSPosed 的模块设置打开本页，关闭此开关即可恢复图标。桌面刷新可能需要稍等片刻。")
     }
 
     override fun onStart() {
