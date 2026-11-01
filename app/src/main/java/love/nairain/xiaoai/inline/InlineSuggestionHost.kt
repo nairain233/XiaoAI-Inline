@@ -102,7 +102,7 @@ internal class InlineSuggestionHost(
         }
     }
 
-    fun showSuggestion(slot: FrameLayout, view: InlineContentView, index: Int) {
+    fun showSuggestion(slot: FrameLayout, view: InlineContentView, index: Int, onClick: () -> Unit) {
         if (slot.parent !== row) return
         // inflate 回调携带远程内容的实际尺寸；WRAP_CONTENT 会丢失它，导致滚动容器内测成零宽。
         val renderedSize = view.layoutParams
@@ -131,7 +131,10 @@ internal class InlineSuggestionHost(
         updateVisibility()
         report("SUGGESTION_VISIBLE index=$index remoteWidth=${renderedSize.width} remoteHeight=${renderedSize.height}")
         // 这是系统提供的点击通知；真正的填充仍由远程建议处理。
-        view.setOnClickListener { report("SUGGESTION_CLICK index=$index") }
+        view.setOnClickListener {
+            report("SUGGESTION_CLICK index=$index")
+            onClick()
+        }
     }
 
     fun clear() {
