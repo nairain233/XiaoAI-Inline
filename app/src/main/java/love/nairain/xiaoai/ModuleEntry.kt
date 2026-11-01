@@ -10,6 +10,8 @@ import io.github.libxposed.api.XposedModuleInterface.HotReloadingParam
 import io.github.libxposed.api.XposedModuleInterface.ModuleLoadedParam
 import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
 import io.github.libxposed.api.XposedModuleInterface.SystemServerStartingParam
+import love.nairain.xiaoai.inline.ImeDexResolver
+import love.nairain.xiaoai.inline.ImeTargets
 import love.nairain.xiaoai.inline.XiaoAiImeHook
 
 class ModuleEntry : XposedModule() {
@@ -18,6 +20,7 @@ class ModuleEntry : XposedModule() {
     private var processName = ""
     @Volatile private var enabled = false
     private var imeHook: XiaoAiImeHook? = null
+    private var imeTargets: ImeTargets? = null
     private var systemInstalled = false
     private var targetClassLoader: ClassLoader? = null
     @Volatile private var retiring = false
@@ -67,9 +70,7 @@ class ModuleEntry : XposedModule() {
             hooks.intercept(gate) { chain ->
                 val info = chain.args[0] as? InputMethodInfo
                 val touchExploration = chain.args[1] as Boolean
-                if (enabled && !touchExploration && info?.packageName == HOST_PACKAGE &&
-                    info.serviceName == HOST_SERVICE
-                ) {
+                if (enabled && !touchExploration && info?.packageName == HOST_PACKAGE) {
                     report("CAPABILITY_ALLOWED")
                     true
                 } else {
@@ -90,13 +91,21 @@ class ModuleEntry : XposedModule() {
     override fun onPackageReady(param: PackageReadyParam) {
         if (param.packageName != HOST_PACKAGE || processName != HOST_PACKAGE || imeHook != null) return
         targetClassLoader = param.classLoader
-        installImeHooks(param.classLoader)
+        try {
+            installImeHooks(param.classLoader)
+        } catch (error: Exception) {
+            hooks.rollback()
+            report("IME_HOOK_UNAVAILABLE type=${error.javaClass.simpleName} reason=${error.message}")
+        } catch (error: LinkageError) {
+            hooks.rollback()
+            report("IME_HOOK_UNAVAILABLE type=${error.javaClass.simpleName}")
+        }
     }
 
     private fun installImeHooks(classLoader: ClassLoader) {
         try {
-            val serviceClass = Class.forName(HOST_SERVICE, false, classLoader)
-            imeHook = XiaoAiImeHook(this, hooks, serviceClass, { enabled && !retiring }, ::report)
+            val targets = imeTargets ?: ImeDexResolver.resolve(classLoader, ::report).also { imeTargets = it }
+            imeHook = XiaoAiImeHook(this, hooks, targets, { enabled && !retiring }, ::report)
                 .also { it.install() }
             report("IME_HOOK_READY enabled=$enabled")
         } catch (error: Exception) {
@@ -117,8 +126,13 @@ class ModuleEntry : XposedModule() {
             preferenceListener = null
             preferences = null
             // 仅传递宿主/系统对象和基础类型，不把旧模块对象带到新的 ClassLoader。
-            param.setSavedInstanceState(hashMapOf("classLoader" to targetClassLoader, "ime" to imeState))
+            param.setSavedInstanceState(hashMapOf(
+                "classLoader" to targetClassLoader,
+                "ime" to imeState,
+                "targets" to imeTargets?.save(),
+            ))
             imeHook = null
+            imeTargets = null
             report("HOT_RELOAD_PREPARED process=$processName")
             true
         }
@@ -130,6 +144,10 @@ class ModuleEntry : XposedModule() {
             initialize(param)
             val state = param.savedInstanceState as? Map<*, *>
             targetClassLoader = state?.get("classLoader") as? ClassLoader
+            (state?.get("targets") as? Map<*, *>)?.let {
+                imeTargets = ImeTargets.restore(it, checkNotNull(targetClassLoader))
+                report("DEX_TARGETS_RESTORED")
+            }
             if (param.isSystemServer) {
                 installSystemHooks(checkNotNull(targetClassLoader) { "System classloader missing" })
             } else if (processName == HOST_PACKAGE) {
@@ -160,6 +178,5 @@ class ModuleEntry : XposedModule() {
         const val PREFERENCES = "inline"
         const val ENABLED = "enabled"
         const val HOST_PACKAGE = "com.xiaomi.type"
-        const val HOST_SERVICE = "com.mi.ime.MiInputMethodService"
     }
 }

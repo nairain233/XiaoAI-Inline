@@ -46,6 +46,7 @@ dependencies {
     compileOnly(libs.libxposed.api)
     implementation(libs.libxposed.service)
     implementation(libs.androidx.autofill)
+    implementation(libs.dexkit)
     testImplementation(libs.junit)
     testImplementation(libs.libxposed.api)
 }

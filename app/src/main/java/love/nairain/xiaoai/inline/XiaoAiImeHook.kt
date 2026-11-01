@@ -19,10 +19,11 @@ import java.lang.reflect.Method
 internal class XiaoAiImeHook(
     private val module: XposedModule,
     private val hooks: ReloadableHooks,
-    private val serviceClass: Class<*>,
+    private val targets: ImeTargets,
     private val enabled: () -> Boolean,
     private val report: (String) -> Unit,
 ) {
+    private val serviceClass = targets.serviceClass
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activeService: InputMethodService? = null
     private var host: InlineSuggestionHost? = null
@@ -58,21 +59,23 @@ internal class XiaoAiImeHook(
             bind(service)
             // View 重建后不能让旧容器上的异步 inflate 回调重新挂载内容。
             if (host != null) clear("view-recreated")
-            val root = result as? ViewGroup
-            // 实机外层容器会强制所有直接子 View 填满，建议条应加入其内部原生容器。
-            val container = root?.getChildAt(0) as? FrameLayout
+            val root = result as? View
+            // 不同版本直接返回键盘容器或增加外层包装，按 DEX 定位的类型查找唯一容器。
+            val container = targets.findContainer(root)
             inputContainer = container
             supportedView = container != null
             if (container != null) {
                 attachHost(service, container)
-                report("HOST_ATTACHED root=${root.javaClass.simpleName}")
+                report("HOST_ATTACHED root=${root?.javaClass?.name} container=${container.javaClass.name}")
                 pendingSuggestions?.let { suggestions ->
                     pendingSuggestions = null
                     inflateSuggestions(service, suggestions)
                 }
             } else {
                 clear("unsupported-view")
-                report("HOST_UNAVAILABLE")
+                (host?.parent as? ViewGroup)?.removeView(host)
+                host = null
+                report("HOST_UNAVAILABLE root=${root?.javaClass?.name}")
             }
         }
         before("onStartInput", EditorInfo::class.java, Boolean::class.javaPrimitiveType!!) { service, args ->
@@ -154,7 +157,7 @@ internal class XiaoAiImeHook(
     fun restoreAfterReload(state: Map<*, *>?) {
         val service = state?.get("service") as? InputMethodService ?: return
         bind(service)
-        inputContainer = state["container"] as? FrameLayout
+        inputContainer = (state["container"] as? FrameLayout)?.takeIf { targets.containerClass.isInstance(it) }
         supportedView = inputContainer?.let { true }
         inputVisible = state["visible"] == true
         lastTop = state["top"] as? Int
