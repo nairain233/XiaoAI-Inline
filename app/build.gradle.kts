@@ -11,8 +11,8 @@ android {
         applicationId = "love.nairain.xiaoai"
         minSdk = 35
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.1.2"
+        versionCode = 1
+        versionName = "0.0.1"
     }
 
     buildTypes {
